@@ -1,2 +1,2 @@
 # Data
-Write some overview description here. The VDJ (IgM) Excel file for ueRA1 can be deposited here. However, if we do not have any additional data files to add, it might be weird to have an entire repository for only a single file...
+This directory contains supplemental data for the analyses in the R script files. 
