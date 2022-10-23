@@ -1,0 +1,188 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(Seurat)
+library(clustree)
+library(DoubletFinder)
+library(scPred)
+library(dplyr)
+library(stringr)
+
+#--Read in Data---#
+set.seed(1001)
+ra1.data = Read10X("RA1/RA1_filtered_feature_bc_matrix") # Read in CellRanger output files
+ra1 = CreateSeuratObject(counts = ra1.data, project = "ra1", min.cells = 3, min.features = 200) # Create Seurat object
+
+#---Quality Control and Filtering---#
+ra1[["percent.mt"]] = PercentageFeatureSet(ra1, pattern = "^MT-") # Add % mitochondrial genes expressed as metadata
+ra1[["percent.ribo"]] = PercentageFeatureSet(ra1, pattern = "^RP[SL]") # Add % ribosomal genes as metadata
+
+VlnPlot(ra1, group.by = "orig.ident", features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), pt.size = 0.1,ncol = 2) + NoLegend()
+
+ra1 = subset(ra1, subset = nFeature_RNA > 700 & nFeature_RNA < 3000 & percent.mt < 11 & percent.ribo >5) # Filter for quality
+
+#---Normalization---#
+ra1 = NormalizeData(ra1, normalization.method = "LogNormalize", scale.factor = 10000) # Log-normalize data
+ra1 = FindVariableFeatures(ra1, selection.method = "vst") # Identify highly variable genes
+
+#---Scaling---#
+ra1.all.genes = rownames(ra1) # All genes in the data
+ra1 = ScaleData(ra1, features = ra1.all.genes) # Scale
+
+#---Principal Component Analysis---#
+ra1 = RunPCA(object = ra1, features = VariableFeatures(object = ra1)) # Perform PCA
+ElbowPlot(ra1, reduction = "pca", ndims = 50) # Plot PCs against standard deviation
+
+#---Clustering---#
+ra1 = FindNeighbors(object = ra1, dims = 1:25) # Construct SNN graph, using 25 PCs
+
+res = seq.int(0.1, 2.0, 0.1)
+for (i in res){
+  ra1 = FindClusters(object = ra1, resolution = i)
+}
+clustree(ra1@meta.data, prefix = "RNA_snn_res.")
+ra1 = FindClusters(object = ra1, resolution = 0.8) # Identify clusters
+
+#---UMAP---#
+ra1 = RunUMAP(object = ra1, dims = 1:25) # Run UMAP
+UMAPPlot(ra1, label = T) # Plot clusters in UMAP space
+
+#---Doublet Prediction---#
+# Define the expected number of doublet cells
+annotations = ra1@meta.data$seurat_clusters # Define clusters
+homotypic.prop = modelHomotypic(annotations) # Model homotypic proportions
+nExp = round(ncol(ra1)* 0.031) # Expect 3.1% doublets for 4 000 cells (overexpectation rather than underexpectation)
+nExp_adj = round(nExp*(1-homotypic.prop)) # Adjust expectations
+ra1 = doubletFinder_v3(ra1, pN = 0.25, pK = 0.09, nExp = nExp, PCs = 1:25) # Perform doublet prediction
+DF.name = colnames(ra1@meta.data)[grepl("DF.classification", colnames(ra1@meta.data))]
+
+cowplot::plot_grid( ncol = 2,
+                    DimPlot(ra1, group.by = "orig.ident") + NoAxes(),
+                    DimPlot(ra1, group.by = DF.name) + NoAxes() + ggtitle("Predicted Doublets") + theme(plot.title = element_text(hjust = 0.5))) # Plot predicted doublets
+
+DimPlot(ra1, group.by = DF.name) + ggtitle("Predicted Doublets") + theme(plot.title = element_text(hjust = 0.5)) # Plot predicted doublets in UMAP space
+
+## Examine if the predicted doublets have more detected genes in general
+VlnPlot(ra1, features = "nFeature_RNA", group.by = DF.name, pt.size = 0.1) +
+  ggtitle("Predicted Doublets") + theme(plot.title = element_text(hjust = 0.5))
+
+## Remove the predicted doublets from the data
+dim(ra1[,ra1@meta.data[,DF.name] == "Doublet"])[2] # Number of doublets detected
+ra1 = ra1[,ra1@meta.data[,DF.name] == "Singlet"] # Only retain predicted singlets for downstream analyses
+
+#---Cell Type Prediction---#
+reference = scPred::pbmc_1 # Load the reference
+
+## Run all previous analyses on the reference data
+reference = reference %>%
+  NormalizeData() %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(verbose = F) %>%
+  RunUMAP(dims = 1:25)
+
+DimPlot(reference, group.by = "cell_type", label = TRUE, repel = TRUE) + NoAxes() + ggtitle("Reference") + theme(plot.title = element_text(hjust = 0.5)) # Plot predicted cell types in reference in UMAP space
+transfer.anchors = FindTransferAnchors(reference = reference, query = ra1,
+                                        dims = 1:25) # Identify transfer anchors between reference and query
+predictions = TransferData(anchorset = transfer.anchors, refdata = reference$cell_type, 
+                            dims = 1:25) # Transfer predictions using the transfer anchors
+ra1 = AddMetaData(object = ra1, metadata = predictions) # Add predictions to metadata
+DimPlot(ra1, group.by = "predicted.id", label = T, repel = T) + ggtitle("Predicted Cell Type") +  
+  theme(plot.title = element_text(hjust = 0.5)) # Plot cell type predictions for query data in UMAP space
+
+#---Remove Irrelevant Cells---#
+ra1.1 = subset(ra1, predicted.id == "B cell") # Only retain predicted B cells for downstream analysis
+
+#---Single-Cell Transform---#
+ra1.1 = SCTransform(object = ra1.1) # Perform SCT with default settings
+
+#---Principal Component Analysis---#
+ra1.1 = RunPCA(object = ra1.1, features = VariableFeatures(object = ra1.1), assay = "SCT") # Perform principal component analysis
+ElbowPlot(ra1.1, reduction = "pca", ndims = 50) # Plot PCs against standard deviation
+
+#---Clustering---#
+ra1.1 = FindNeighbors(object = ra1.1, dims = 1:35) # Construct SNN graph, using 35 PCs
+for (i in res){
+  ra1.1 = FindClusters(object = ra1.1, resolution = i)
+}
+
+clustree(ra1.1@meta.data, prefix = "SCT_snn_res.")
+ra1.1 = FindClusters(object = ra1.1, resolution = 0.25)
+
+#---UMAP---#
+ra1.1 = RunUMAP(object = ra1.1, dims = 1:35) # Run UMAP
+UMAPPlot(ra1.1, label = T, pt.size = 0.7, label.size = 7) # Plot clusters in UMAP space
+
+#---Identify Differentially Expressed Genes---#
+ra1.1_degs = FindAllMarkers(object = ra1.1, test.use = "negbinom", return.thresh = 0.05, only.pos = T) # Identify upregulated DEGs
+ 
+ra1.1_degs_top10 = ra1.1_degs %>% 
+  filter(p_val_adj > 0 & p_val_adj < 0.05) %>%
+  group_by(cluster) %>%
+  slice_min(p_val_adj, n = 10) # Extract top10 significant DEGs
+
+DoHeatmap(object = ra1.1, features = ra1.1_degs_top10$gene, raster = F) # Plot top10 DEGs
+
+## Plot Select Genes
+FeaturePlot(ra1.1, features = c("NFKBIA", "IGHV3-7", "IGKV4-1", "IGLV2-14", "CD69", "COCH", "CRIP2", "TEX9", "ITGB1"), 
+            pt.size = 1.5, order = T, cols = c("lightgrey", "red"))
+
+## Plot distribution of IgM from VDJ-seq data
+igm = read.xlsx("RA1_IgM_data_VDJ-seq.xlsx", sheetName = "Sheet1")[,1]
+
+DimPlot(ra1.1, cells.highlight = igm, pt.size = 1.5, sizes.highlight = 1.5, order = T, cols = c("lightgrey", "red")) + NoLegend()
+
+#---Examine Proportion of Ig Genes in Top50 Principal Components---#
+a = Loadings(object = ra1.1, reduction = "pca") # Extract loadings for PCA
+b = as.data.frame(abs(a)) # Make values absolute
+
+df = data.frame(NA_col = rep(NA, ncol(b))) # Create empty dataframe
+for (i in 1:50) { # Loop to extract top 50 loadings for each PC
+  d = rownames(slice_max(b, get(paste0("PC_",i)), n = 50)) # Extract loadings
+  df[i] = d # Print to output dataframe
+  colnames(df)[i] = paste0("PC_",i) # Correct column name for each component
+}
+
+df_ig_genes = data.frame(NA_col = rep(NA, ncol(df))) # Create empty dataframe
+rownames(df_ig_genes) <- colnames(df)
+counter = 1
+genes = c("IGH[ADEGM]", "IGHV", "IGKV", "IGKJ", "IGKC", "IGLV", "IGLJ", "IGLC")
+
+for (i in genes) {
+  FUN <- function(x) {temp1 <- str_count(x, pattern = i) %>% sum()}
+  df_ig_genes[counter] <- apply(df, 2, FUN)
+  colnames(df_ig_genes)[counter] <- i
+  counter = counter + 1
+}
+
+# Calculate sum of Ig-genes
+a = df_ig_genes
+FUN = function(x) {sum(x)/50}
+a$proportion <- apply(X = a, MARGIN = 1, FUN = FUN)  
+a$percent <- a$proportion*100
+a$labels <- factor(gsub(pattern = "PC_", replacement = "", x = rownames(a)), levels = 1:50)
+
+# Plot every 5 ticks for x-axis
+a = a %>%
+  mutate(labels_index = as.integer(labels))
+
+breaks = a %>%
+  mutate(ticks_to_plot = labels_index %% 5 == 0) %>%
+  filter(ticks_to_plot) %>%
+  pull(labels)
+
+ggplot(data = a, aes(x = labels, y = percent)) +
+  geom_segment( aes(x = labels, xend = labels, y = 0, yend = percent), color = "grey") +
+  geom_point( color = "red", size = 3) +
+  theme_light() +
+  theme(panel.grid.major.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  xlab("Principal component") +
+  ylab("% Ig genes") +
+  scale_x_discrete(breaks = breaks)
+```
+
