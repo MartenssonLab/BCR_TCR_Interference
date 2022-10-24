@@ -1,22 +1,31 @@
-#####################################
-###-RA1 Workflow without Ig Genes-###
-#####################################
+---
+title: "RA1_without_BCR"
+author: "Kristoffer Grimstad"
+date: "2022-10-23"
+output: html_document
+---
 
+# Packages used
 ```{r}
-library(Seurat)
-library(clustree)
-library(DoubletFinder)
-library(scPred)
-library(dplyr)
-library(stringr)
-library(ggplot2)
+suppressPackageStartupMessage({
+  library(Seurat)
+  library(clustree)
+  library(DoubletFinder)
+  library(scPred)
+  library(dplyr)
+  library(stringr)
+  library(ggplot2)
+})
+```
 
-#--Read in Data---#
+# Quality control and filtering
+```{r}
+## Read in data
 set.seed(1001)
 ra1.data = Read10X("/RA1_filtered_feature_bc_matrix") # Read in CellRanger output files
 ra_no_ig = CreateSeuratObject(counts = ra1.data, project = "RA1", min.cells = 3, min.features = 200) # Create Seurat object
 
-#---Quality Control and Filtering---#
+## Visualize QC metrics
 ra_no_ig[["percent.mt"]] = PercentageFeatureSet(ra_no_ig, pattern = "^MT-") # Add % mitochondrial genes expressed as metadata
 ra_no_ig[["percent.ribo"]] = PercentageFeatureSet(ra_no_ig, pattern = "^RP[SL]") # Add % ribosomal genes as metadata
 
@@ -26,19 +35,19 @@ ra1_no_ig = ra1_no_ig[!grepl("^IG[HKL]V|^IG[KL]J|^IG[KL]C|^IGH[ADEGM]", rownames
 
 ra_no_ig = subset(ra_no_ig, subset = nFeature_RNA > 700 & nFeature_RNA < 3000 & percent.mt < 11 & percent.ribo >5) # Filter for quality
 
-#---Normalization---#
+## Normalization
 ra_no_ig = NormalizeData(ra_no_ig, normalization.method = "LogNormalize", scale.factor = 10000) # Log-normalize data
 ra_no_ig = FindVariableFeatures(ra_no_ig, selection.method = "vst") # Identify highly variable genes
 
-#---Scaling---#
+## Scaling
 ra_no_ig.all.genes = rownames(ra_no_ig) # All genes in the data
 ra_no_ig = ScaleData(ra_no_ig, features = ra_no_ig.all.genes) # Scale
 
-#---Principal Component Analysis---#
+## Principal component analysis
 ra_no_ig = RunPCA(object = ra_no_ig, features = VariableFeatures(object = ra_no_ig)) # Perform PCA
 ElbowPlot(ra_no_ig, reduction = "pca", ndims = 50) # Plot PCs against standard deviation
 
-#---Clustering---#
+## Clustering
 ra_no_ig = FindNeighbors(object = ra_no_ig, dims = 1:25) # Construct SNN graph, using 25 PCs
 
 res = seq.int(0.1, 2.0, 0.1)
@@ -48,12 +57,14 @@ for (i in res){
 clustree(ra_no_ig@meta.data, prefix = "RNA_snn_res.")
 ra_no_ig = FindClusters(object = ra_no_ig, resolution = 0.8) # Identify clusters
 
-#---UMAP---#
+## UMAP
 ra_no_ig = RunUMAP(object = ra_no_ig, dims = 1:25) # Run UMAP
 UMAPPlot(ra_no_ig, label = T) # Plot clusters in UMAP space
+```
 
-#---Doublet Prediction---#
-# Define the expected number of doublet cells
+# Doublet prediction
+```{r}
+## Define the expected number of doublet cells
 annotations = ra_no_ig@meta.data$seurat_clusters # Define clusters
 homotypic.prop = modelHomotypic(annotations) # Model homotypic proportions
 nExp = round(ncol(ra_no_ig)* 0.031) # Expect 3.1% doublets for 4 000 cells (overexpectation rather than underexpectation)
@@ -74,8 +85,10 @@ VlnPlot(ra_no_ig, features = "nFeature_RNA", group.by = DF.name, pt.size = 0.1) 
 ## Remove the predicted doublets from the data
 dim(ra_no_ig[,ra_no_ig@meta.data[,DF.name] == "Doublet"])[2] # Number of doublets detected
 ra_no_ig = ra_no_ig[,ra_no_ig@meta.data[,DF.name] == "Singlet"] # Only retain predicted singlets for downstream analyses
+```
 
-#---Cell Type Prediction---#
+## Cell type prediction
+```{r}
 reference = scPred::pbmc_1 # Load the reference
 
 ## Run all previous analyses on the reference data
@@ -94,18 +107,20 @@ predictions = TransferData(anchorset = transfer.anchors, refdata = reference$cel
 ra_no_ig = AddMetaData(object = ra_no_ig, metadata = predictions) # Add predictions to metadata
 DimPlot(ra_no_ig, group.by = "predicted.id", label = T, repel = T) + ggtitle("Predicted Cell Type") +  
   theme(plot.title = element_text(hjust = 0.5)) # Plot cell type predictions for query data in UMAP space
+```
 
-#---Remove Irrelevant Cells---#
+#  Filtering and reclustering
+## Remove irrelevant cells
 ra_no_ig = subset(ra_no_ig, predicted.id == "B cell") # Only retain predicted B cells for downstream analysis
 
-#---Single-Cell Transform---#
+## Single-cell transform
 ra_no_ig = SCTransform(object = ra_no_ig) # Perform SCT with default settings
 
-#---Principal Component Analysis---#
+## Principal component analysis
 ra_no_ig = RunPCA(object = ra_no_ig, features = VariableFeatures(object = ra_no_ig), assay = "SCT") # Perform principal component analysis
 ElbowPlot(ra_no_ig, reduction = "pca", ndims = 50) # Plot PCs against standard deviation
 
-#---Clustering---#
+## Clustering
 ra_no_ig = FindNeighbors(object = ra_no_ig, dims = 1:35) # Construct SNN graph, using 35 PCs
 for (i in res){
   ra_no_ig = FindClusters(object = ra_no_ig, resolution = i)
@@ -114,11 +129,14 @@ for (i in res){
 clustree(ra_no_ig@meta.data, prefix = "SCT_snn_res.")
 ra_no_ig = FindClusters(object = ra_no_ig, resolution = 0.25)
 
-#---UMAP---#
+## UMAP
 ra_no_ig = RunUMAP(object = ra_no_ig, dims = 1:35) # Run UMAP
 UMAPPlot(ra_no_ig, label = T, pt.size = 0.7, label.size = 7) # Plot clusters in UMAP space
+```
 
-#---Identify Differentially Expressed Genes---#
+# Gene expression analyses
+```{r}
+## Top-10 upregulated DEGs
 ra_no_ig_degs = FindAllMarkers(object = ra_no_ig, test.use = "negbinom", return.thresh = 0.05, only.pos = T) # Identify upregulated DEGs
  
 ra_no_ig_degs_top10 = ra_no_ig_degs %>% 
@@ -128,7 +146,7 @@ ra_no_ig_degs_top10 = ra_no_ig_degs %>%
 
 DoHeatmap(object = ra_no_ig, features = ra_no_ig_degs_top10$gene, raster = F) # Plot top10 DEGs
 
-## Add back count data for Ig genes
+## Add back count data for BCR-genes
 a = CreateSeuratObject(counts = ra1.data, project = "RA1", min.cells = 3, min.features = 200)
 b = subset(a, cells = WhichCells(object = ra1_no_ig)) # Only include the cells found in the original data
 
@@ -138,7 +156,7 @@ ra1_no_ig[["new.counts"]]
 
 ra1_no_ig = SCTransform(ra1_no_ig, assay = "new.counts")
 
-## Plot Select Genes
+## Plot select genes
 FeaturePlot(ra_no_ig, features = c("NFKBIA", "IGHV3-7", "IGKV4-1", "IGLV2-14", "CD69", "COCH", "CRIP2", "TEX9", "ITGB1"), 
             pt.size = 1.5, order = T, cols = c("lightgrey", "red"))
 

@@ -1,22 +1,31 @@
-##################################
-###-RA1 Workflow with Ig Genes-###
-##################################
+---
+title: "RA1_with_BCR"
+author: "Kristoffer Grimstad"
+date: "2022-10-23"
+output: html_document
+---
 
+# Packages used
 ```{r}
-library(Seurat)
-library(clustree)
-library(DoubletFinder)
-library(scPred)
-library(dplyr)
-library(stringr)
-library(ggplot2)
+suppressPackageStartupMessage({
+  library(Seurat)
+  library(clustree)
+  library(DoubletFinder)
+  library(scPred)
+  library(dplyr)
+  library(stringr)
+  library(ggplot2)
+})
+```
 
-#--Read in Data---#
+# Quality control and filtering
+```{r}
+## Read in data
 set.seed(1001)
 ra1.data = Read10X("/RA1_filtered_feature_bc_matrix") # Read in CellRanger output files
 ra1_ig = CreateSeuratObject(counts = ra1.data, project = "RA1", min.cells = 3, min.features = 200) # Create Seurat object
 
-#---Quality Control and Filtering---#
+## Visualize QC metrics
 ra1_ig[["percent.mt"]] = PercentageFeatureSet(ra1_ig, pattern = "^MT-") # Add % mitochondrial genes expressed as metadata
 ra1_ig[["percent.ribo"]] = PercentageFeatureSet(ra1_ig, pattern = "^RP[SL]") # Add % ribosomal genes as metadata
 
@@ -24,19 +33,19 @@ VlnPlot(ra1_ig, group.by = "orig.ident", features = c("nFeature_RNA", "nCount_RN
 
 ra1_ig = subset(ra1_ig, subset = nFeature_RNA > 700 & nFeature_RNA < 3000 & percent.mt < 11 & percent.ribo >5) # Filter for quality
 
-#---Normalization---#
+## Normalization
 ra1_ig = NormalizeData(ra1_ig, normalization.method = "LogNormalize", scale.factor = 10000) # Log-normalize data
 ra1_ig = FindVariableFeatures(ra1_ig, selection.method = "vst") # Identify highly variable genes
 
-#---Scaling---#
+## Scaling
 ra1_ig.all.genes = rownames(ra1_ig) # All genes in the data
 ra1_ig = ScaleData(ra1_ig, features = ra1_ig.all.genes) # Scale
 
-#---Principal Component Analysis---#
+## Principal component analysis
 ra1_ig = RunPCA(object = ra1_ig, features = VariableFeatures(object = ra1_ig)) # Perform PCA
 ElbowPlot(ra1_ig, reduction = "pca", ndims = 50) # Plot PCs against standard deviation
 
-#---Clustering---#
+## Clustering
 ra1_ig = FindNeighbors(object = ra1_ig, dims = 1:25) # Construct SNN graph, using 25 PCs
 
 res = seq.int(0.1, 2.0, 0.1)
@@ -46,12 +55,15 @@ for (i in res){
 clustree(ra1_ig@meta.data, prefix = "RNA_snn_res.")
 ra1_ig = FindClusters(object = ra1_ig, resolution = 0.8) # Identify clusters
 
-#---UMAP---#
+## UMAP
 ra1_ig = RunUMAP(object = ra1_ig, dims = 1:25) # Run UMAP
-UMAPPlot(ra1_ig, label = T) # Plot clusters in UMAP space
+UMAPPlot(ra1_ig, la1bel = T) # Plot clusters in UMAP space
 
-#---Doublet Prediction---#
-# Define the expected number of doublet cells
+```
+
+# Doublet prediction
+```{r}
+## Define the expected number of doublet cells
 annotations = ra1_ig@meta.data$seurat_clusters # Define clusters
 homotypic.prop = modelHomotypic(annotations) # Model homotypic proportions
 nExp = round(ncol(ra1_ig)* 0.031) # Expect 3.1% doublets for 4 000 cells (overexpectation rather than underexpectation)
@@ -72,8 +84,9 @@ VlnPlot(ra1_ig, features = "nFeature_RNA", group.by = DF.name, pt.size = 0.1) +
 ## Remove the predicted doublets from the data
 dim(ra1_ig[,ra1_ig@meta.data[,DF.name] == "Doublet"])[2] # Number of doublets detected
 ra1_ig = ra1_ig[,ra1_ig@meta.data[,DF.name] == "Singlet"] # Only retain predicted singlets for downstream analyses
-
-#---Cell Type Prediction---#
+```
+# Cell type prediction
+```{r}
 reference = scPred::pbmc_1 # Load the reference
 
 ## Run all previous analyses on the reference data
@@ -92,18 +105,21 @@ predictions = TransferData(anchorset = transfer.anchors, refdata = reference$cel
 ra1_ig = AddMetaData(object = ra1_ig, metadata = predictions) # Add predictions to metadata
 DimPlot(ra1_ig, group.by = "predicted.id", label = T, repel = T) + ggtitle("Predicted Cell Type") +  
   theme(plot.title = element_text(hjust = 0.5)) # Plot cell type predictions for query data in UMAP space
+```
 
-#---Remove Irrelevant Cells---#
+# Filtering and reclustering
+```{r}
+## Remove irrelevant cells
 ra1_ig = subset(ra1_ig, predicted.id == "B cell") # Only retain predicted B cells for downstream analysis
 
-#---Single-Cell Transform---#
+##Single-cell transform
 ra1_ig = SCTransform(object = ra1_ig) # Perform SCT with default settings
 
-#---Principal Component Analysis---#
+## PRincipal component analysis
 ra1_ig = RunPCA(object = ra1_ig, features = VariableFeatures(object = ra1_ig), assay = "SCT") # Perform principal component analysis
 ElbowPlot(ra1_ig, reduction = "pca", ndims = 50) # Plot PCs against standard deviation
 
-#---Clustering---#
+## Clustering
 ra1_ig = FindNeighbors(object = ra1_ig, dims = 1:35) # Construct SNN graph, using 35 PCs
 for (i in res){
   ra1_ig = FindClusters(object = ra1_ig, resolution = i)
@@ -112,11 +128,14 @@ for (i in res){
 clustree(ra1_ig@meta.data, prefix = "SCT_snn_res.")
 ra1_ig = FindClusters(object = ra1_ig, resolution = 0.25)
 
-#---UMAP---#
+## UMAP
 ra1_ig = RunUMAP(object = ra1_ig, dims = 1:35) # Run UMAP
 UMAPPlot(ra1_ig, label = T, pt.size = 0.7, label.size = 7) # Plot clusters in UMAP space
+```
 
-#---Identify Differentially Expressed Genes---#
+# Gene expression analyses
+```{r}
+## Top-10 upregulated DEGs
 ra1_ig_degs = FindAllMarkers(object = ra1_ig, test.use = "negbinom", return.thresh = 0.05, only.pos = T) # Identify upregulated DEGs
  
 ra1_ig_degs_top10 = ra1_ig_degs %>% 
@@ -134,8 +153,11 @@ FeaturePlot(ra1_ig, features = c("NFKBIA", "IGHV3-7", "IGKV4-1", "IGLV2-14", "CD
 igm = read.xlsx("ra1_igM_data_VDJ-seq.xlsx", sheetName = "Sheet1")[,1]
 
 DimPlot(ra1_ig, cells.highlight = igm, pt.size = 1.5, sizes.highlight = 1.5, order = T, cols = c("lightgrey", "red")) + NoLegend()
+```
 
-#---Examine Proportion of Ig Genes in Top50 Principal Components---#
+# Inspecting principal components
+```{r}
+# Extract top 50 loading per principal component
 a = Loadings(object = ra1_ig, reduction = "pca") # Extract loadings for PCA
 b = as.data.frame(abs(a)) # Make values absolute
 
@@ -146,6 +168,7 @@ for (i in 1:50) { # Loop to extract top 50 loadings for each PC
   colnames(df)[i] = paste0("PC_",i) # Correct column name for each component
 }
 
+# Calculate occurrence of BCR-genes
 df_ig_genes = data.frame(NA_col = rep(NA, ncol(df))) # Create empty dataframe
 rownames(df_ig_genes) <- colnames(df)
 counter = 1
@@ -158,14 +181,13 @@ for (i in genes) {
   counter = counter + 1
 }
 
-# Calculate sum of Ig-genes
+# Calculate sand plot ptoportion of BCR-genes
 a = df_ig_genes
 FUN = function(x) {sum(x)/50}
 a$proportion <- apply(X = a, MARGIN = 1, FUN = FUN)  
 a$percent <- a$proportion*100
 a$labels <- factor(gsub(pattern = "PC_", replacement = "", x = rownames(a)), levels = 1:50)
 
-# Plot every 5 ticks for x-axis
 a = a %>%
   mutate(labels_index = as.integer(labels))
 
@@ -174,6 +196,7 @@ breaks = a %>%
   filter(ticks_to_plot) %>%
   pull(labels)
 
+# Lollopop
 ggplot(data = a, aes(x = labels, y = percent)) +
   geom_segment( aes(x = labels, xend = labels, y = 0, yend = percent), color = "grey") +
   geom_point( color = "red", size = 3) +
