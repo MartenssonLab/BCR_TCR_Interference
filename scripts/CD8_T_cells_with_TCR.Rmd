@@ -1,0 +1,125 @@
+---
+title: "CD8+ T cells with TCR"
+author: "Timothy Sundell"
+date: "2022-10-24"
+output: html_document
+---
+
+# Packages used
+```{r}
+suppressPackageStartupMessages({
+ library(Seurat)
+ library(sctransform)
+ library(tidyverse)
+ library(SeuratWrappers)
+ library(clustree)
+})
+```
+
+# Peripheral blood CD8+ T cells
+```{r}
+# Importing data and create Seurat object
+CD8_T_cells.data <- Read10X(data.dir = "CD8+ T cells of Healthy Donor 1/filtered_feature_bc_matrix/")
+CD8_T_cells <- CreateSeuratObject(counts=CD8_T_cells.data$`Gene Expression`, project = "CD8_T_cells", min.cells = 3, min.features = 200)
+
+# Mitochondrial genes
+CD8_T_cells[["percent.mt"]] <- PercentageFeatureSet(CD8_T_cells, pattern = "^MT-")
+# Ribosomal proteins
+CD8_T_cells[["percent.ribo"]] <- PercentageFeatureSet(CD8_T_cells, pattern = "^RP[SL]")
+
+# Remove cells where at least 5% of total transcripts are from mitochondrial origin
+CD8_T_cells <- subset(CD8_T_cells, percent.mt < 5)
+
+# Normalization, scaling and initial clustering
+CD8_T_cells <- NormalizeData(CD8_T_cells, normalization.method = "LogNormalize", scale.factor = 10000)
+CD8_T_cells <- FindVariableFeatures(CD8_T_cells, selection.method = "vst", nfeatures = 2000)
+CD8_T_cells <- ScaleData(CD8_T_cells, features = rownames(CD8_T_cells))
+CD8_T_cells <- RunPCA(CD8_T_cells, features = VariableFeatures(object = CD8_T_cells))
+ElbowPlot(object = CD8_T_cells)
+CD8_T_cells <- FindNeighbors(CD8_T_cells, dims = 1:10, nn.method = "rann")
+CD8_T_cells <- FindClusters(CD8_T_cells, resolution = c(0.4))
+CD8_T_cells <- RunUMAP(CD8_T_cells, dims= 1:10)
+
+# Remove clusters with accumulation of mitochondrial transcripts
+CD8_T_cells_filtered <- subset(CD8_T_cells, ident = 0:7)
+
+# Single cell transform
+CD8_T_cells_filtered <- SCTransform(CD8_T_cells_filtered, verbose = FALSE, ncells = NULL)
+CD8_T_cells_filtered <- RunPCA(CD8_T_cells_filtered, verbose = FALSE)
+CD8_T_cells_filtered <- RunUMAP(CD8_T_cells_filtered, dims = 1:20, verbose = FALSE)
+CD8_T_cells_filtered <- FindNeighbors(CD8_T_cells_filtered, dims = 1:20, verbose = FALSE, nn.method = "rann")
+CD8_T_cells_filtered <- FindClusters(CD8_T_cells_filtered, resolution = c(seq(from = 0.1, to = 2.0, by = 0.1)))
+clustree(x = CD8_T_cells_filtered, prefix = "SCT_snn_res.")
+CD8_T_cells_filtered <- FindClusters(CD8_T_cells_filtered, verbose = FALSE, resolution = c(0.4))
+```
+
+## Top-10 upregulated DEGs
+```{r}
+DefaultAssay(CD8_T_cells_filtered) <- "RNA"
+CD8_T_cells_filtered <- NormalizeData(object = CD8_T_cells_filtered, scale.factor = 10000)
+CD8_T_cells_filtered <- ScaleData(object = CD8_T_cells_filtered, features = rownames(CD8_T_cells_filtered))
+
+CD8_T_cells_filtered.markers <- FindAllMarkers(object = CD8_T_cells_filtered, logfc.threshold = 0.25, CD8_T_cells.use = "negbinom", only.pos = T, return.thresh = 0.05)
+
+CD8_T_cells_filtered.markers.filtered <- CD8_T_cells_filtered.markers %>% filter(p_val_adj > 0 & p_val_adj < 0.05)
+
+CD8_T_cells_filtered.markers.filtered_top10 <- CD8_T_cells_filtered.markers.filtered %>%
+  group_by(cluster) %>%
+  slice_min(p_val_adj, n = 10)
+
+DoHeatmap(object = CD8_T_cells_filtered, features = CD8_T_cells_filtered.markers.filtered_top10$gene, raster = F)
+```
+
+## Inspecting principal components
+```{r}
+# Extract top 50 loadings per principal component
+a <- Loadings(object = CD8_T_cells_filtered, reduction = "pca")  # Extract loadings for PCA
+b <- as.data.frame(abs(a))  # Make values absolute
+
+df <- data.frame(NA_col = rep(NA, ncol(b)))     # Create empty dataframe
+for (i in 1:50) {  # Loop to extract top 50 loadings for each PC
+  d <- rownames(slice_max(b, get(paste0("PC_",i)), n = 50)) # Extract loadings
+  df[i] <- d # Print to output dataframe
+  colnames(df)[i] <- paste0("PC_",i) # Correct column name for each component
+}
+
+# Calculate occurrence of TCR-genes
+df_tcr_genes <- data.frame(NA_col = rep(NA, ncol(df)))  # Create empty dataframe
+rownames(df_tcr_genes) <- colnames(df)
+counter <-  1
+genes <- c("TRAV", "TRAC", "TRBV", "TRBC", "TRDV", "TRDC", "TRGV", "TRGC")
+for (i in genes) {
+  FUN <- function(x) {temp1 <- str_count(x, pattern = i) %>% sum()}
+  df_tcr_genes[counter] <- apply(df, 2, FUN)
+  colnames(df_tcr_genes)[counter] <- i
+  counter = counter + 1
+}
+
+# Calculate and plot proportion of TCR-genes
+a <- df_tcr_genes
+FUN = function(x) {sum(x)/50}
+a$proportion <- apply(X = a, MARGIN = 1, FUN = FUN)  
+a$percent <- a$proportion*100
+a$labels <- factor(gsub(pattern = "PC_", replacement = "", x = rownames(a)), levels = 1:50)
+
+a <- a %>%
+  mutate(labels_index = as.integer(labels))
+breaks <- a %>%
+  mutate(ticks_to_plot = labels_index %% 5 == 0) %>%
+  filter(ticks_to_plot) %>%
+  pull(labels)
+
+# Lollipop
+ggplot(data = a, aes(x = labels, y = percent)) +
+  geom_segment( aes(x = labels, xend = labels, y = 0, yend = percent), color = "grey") +
+  geom_point( color = "red", size = 3) +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    axis.ticks.x = element_blank()) +
+  xlab("Principal component") +
+  ylab("% TCR genes") +
+  scale_x_discrete(breaks = breaks)
+```
+
+

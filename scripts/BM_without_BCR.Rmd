@@ -1,0 +1,199 @@
+---
+title: "BM_without_BCR"
+author: "Timothy Sundell"
+date: "2022-10-24"
+output: html_document
+---
+
+# Packages used
+```{r}
+suppressPackageStartupMessages({
+ library(Seurat)
+ library(sctransform)
+ library(tidyverse)
+ library(SeuratWrappers)
+ library(clustree)
+ library(vroom)
+ library(monocle3)
+})
+```
+
+# BM1
+```{r}
+# Importing data and create Seurat object
+BM1.data <- Read10X(data.dir = "BM1/filtered_feature_bc_matrix/")
+BM1 <- CreateSeuratObject(counts = BM1.data, min.cells = 3, min.features = 200)
+
+# Filter + visualise mitochondrial genes + QC metrics
+BM1[["percent.mt"]] <- PercentageFeatureSet(BM1, pattern = "^MT-")
+
+# Ribosomal proteins
+BM1[["percent.ribo"]] <- PercentageFeatureSet(BM1, pattern = "^RP[SL]")
+
+# Removing BCR-genes
+BM1 <- BM1[!grepl("^IG[HKL]V", rownames(BM1)), ]
+BM1 <- BM1[!grepl("^IG[HKL]J", rownames(BM1)), ]
+BM1 <- BM1[!grepl("^IG[KL]C", rownames(BM1)), ]
+BM1 <- BM1[!grepl("^IGH[ADEGM]", rownames(BM1)), ]
+
+BM1 <- NormalizeData(BM1, normalization.method = "LogNormalize", scale.factor = 10000)
+BM1 <- FindVariableFeatures(BM1, selection.method = "vst", nfeatures = 2000)
+BM1 <- ScaleData(BM1, features = rownames(BM1))
+BM1 <- RunPCA(BM1, features = VariableFeatures(object = BM1), verbose = F)
+ElbowPlot(object = BM1)
+BM1 <- FindNeighbors(BM1, dims = 1:10, nn.method = "rann")
+BM1 <- FindClusters(BM1, resolution = 0.8)
+BM1 <- RunUMAP(BM1, dims= 1:10)
+
+# Remove the cluster with high percentage of mitochondrial transcripts
+BM1 <-  subset(BM1, idents = c(0:8))
+
+# Cell cycle scoring
+BM1 <- CellCycleScoring(object = BM1, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+
+# Single cell transform
+BM1 <- SCTransform(BM1, verbose = FALSE, vars.to.regress = c("S.Score", "G2M.Score"))
+BM1 <- RunPCA(BM1, verbose = FALSE)
+ElbowPlot(object = BM1)
+BM1 <- RunUMAP(BM1, dims = 1:20, verbose = FALSE)
+BM1 <- FindNeighbors(BM1, dims = 1:20, verbose = FALSE, nn.method = "rann")
+BM1 <- FindClusters(BM1, verbose = FALSE, resolution = 0.8)
+```
+
+
+# BM2
+```{r}
+# Importing data and create Seurat object
+BM2.data <- Read10X(data.dir = "BM2/filtered_feature_bc_matrix/")
+BM2 <- CreateSeuratObject(counts = BM2.data, min.cells = 3, min.features = 200)
+
+# Filter + visualise mitochondrial genes + QC metrics
+BM2[["percent.mt"]] <- PercentageFeatureSet(BM2, pattern = "^MT-")
+
+# Ribosomal proteins
+BM2[["percent.ribo"]] <- PercentageFeatureSet(BM2, pattern = "^RP[SL]")
+
+# Removing BCR-genes
+BM2 <- BM2[!grepl("^IG[HKL]V", rownames(BM2)), ]
+BM2 <- BM2[!grepl("^IG[HKL]J", rownames(BM2)), ]
+BM2 <- BM2[!grepl("^IG[KL]C", rownames(BM2)), ]
+BM2 <- BM2[!grepl("^IGH[ADEGM]", rownames(BM2)), ]
+
+BM2 <- NormalizeData(BM2, normalization.method = "LogNormalize", scale.factor = 10000)
+BM2 <- FindVariableFeatures(BM2, selection.method = "vst", nfeatures = 2000)
+BM2 <- ScaleData(BM2, features = rownames(BM2))
+BM2 <- RunPCA(BM2, features = VariableFeatures(object = BM2), verbose = F)
+ElbowPlot(object = BM2)
+BM2 <- FindNeighbors(BM2, dims = 1:10, nn.method = "rann")
+BM2 <- FindClusters(BM2, resolution = 0.8)
+BM2 <- RunUMAP(BM2, dims= 1:10)
+
+# Remove the cluster with high percentage of mitochondrial transcripts
+BM2 <-  subset(BM2, idents = c(0:7, 9:10))
+
+# Cell cycle scoring
+BM2 <- CellCycleScoring(object = BM2, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+
+# Single cell transform
+BM2 <- SCTransform(BM2, verbose = FALSE, vars.to.regress = c("S.Score", "G2M.Score"))
+BM2 <- RunPCA(BM2, verbose = FALSE)
+ElbowPlot(object = BM2)
+BM2 <- RunUMAP(BM2, dims = 1:20, verbose = FALSE)
+BM2 <- FindNeighbors(BM2, dims = 1:20, verbose = FALSE, nn.method = "rann")
+BM2 <- FindClusters(BM2, verbose = FALSE, resolution = 0.8)
+```
+
+
+# Integrating BM1 and BM2
+```{r}
+bm.list <- list(BM1, BM2)
+bm.features <- SelectIntegrationFeatures(object.list = bm.list, nfeatures = 3000)
+bm.list <- PrepSCTIntegration(object.list = bm.list, anchor.features = bm.features)
+
+bm.anchors <- FindIntegrationAnchors(
+  object.list = bm.list, 
+  normalization.method = "SCT", 
+  anchor.features = bm.features)
+
+bm.integrated <- IntegrateData(anchorset = bm.anchors, 
+                               normalization.method = "SCT")
+bm.integrated <- RunPCA(object = bm.integrated,
+                        verbose = F)
+bm.integrated <- RunUMAP(object = bm.integrated,
+                         dims = 1:20)
+
+bm.integrated <- FindNeighbors(bm.integrated, reduction = "pca", dims = 1:20)
+bm.integrated <- FindClusters(bm.integrated, resolution = c(seq(from = 0.1, to = 2.0, by = 0.1)))
+clustree(x = bm.integrated, prefix = "integrated_snn_res.")
+bm.integrated <- FindClusters(bm.integrated, resolution = 0.5)
+
+# Remove clusters containing bad cells and recluster
+bm.integrated_filtered_filtered <- subset(bm.integrated, idents = c(0:6,8))
+bm.integrated_filtered_filtered <- FindNeighbors(bm.integrated_filtered, reduction = "pca", dims = 1:20)
+bm.integrated_filtered <- FindClusters(bm.integrated_filtered, resolution = c(seq(from = 0.1, to = 2.0, by = 0.1)))
+clustree(x = bm.integrated_filtered, prefix = "integrated_snn_res.")
+bm.integrated_filtered <- FindClusters(bm.integrated_filtered, resolution = 0.5)
+
+
+# Add back Ig-genes after clustering
+# Read in the RDS file for the integrated dataset analysed with BCR genes
+bm.integrated_with_BCR <- readRDS(file = "bm_integrated_with_BCR.rds")
+bm.integrated_with_BCR <- subset(bm.integrated_with_BCR, cells = WhichCells(object = bm.integrated_filtered))
+
+bm.integrated_filtered[["new.counts_"]] <- GetAssayData(object = bm.integrated_with_BCR, assay = "RNA")
+bm.integrated_filtered <- NormalizeData(object = bm.integrated_filtered, scale.factor = 10000, normalization.method = "LogNormalize", assay = "new.counts")
+bm.integrated_filtered <- ScaleData(object = bm.integrated_filtered, features = rownames(bm.integrated_filtered), assay = "new.counts")
+```
+
+## Top-10 upregulated DEGs
+```{r}
+bm.integrated_filtered.markers <- FindAllMarkers(object = bm.integrated_filtered, logfc.threshold = 0.25, test.use = "negbinom", only.pos = T, return.thresh = 0.05)
+bm.integrated_filtered.markers.filtered <- bm.integrated_filtered.markers %>% filter(p_val_adj > 0 & p_val_adj < 0.05)
+
+bm.integrated_filtered.markers.filtered_top10 <- bm.integrated_filtered.markers.filtered %>%
+  group_by(cluster) %>%
+  slice_min(p_val_adj, n = 10)
+
+DoHeatmap(object = bm.integrated_filtered, features = bm.integrated_filtered.markers.filtered_top10$gene, raster = F)
+```
+
+
+## Monocle 3
+```{r}
+# Initialise the object
+bm.integrated_filtered.cds <- as.cell_data_set(bm.integrated_filtered)
+bm.integrated_filtered.cds <- cluster_cells(cds = bm.integrated_filtered.cds, reduction_method = "UMAP")
+bm.integrated_filtered.cds <- learn_graph(bm.integrated_filtered.cds, use_partition = TRUE)
+
+# Visualise plot
+plot_cells(
+  cds = bm.integrated_filtered.cds,
+  show_trajectory_graph = TRUE
+)
+
+# Call order cells
+bm.integrated_filtered.cds <- order_cells(bm.integrated_filtered.cds, reduction_method = "UMAP")
+
+# Plot
+p1 <- DimPlot(bm.integrated_filtered, reduction = "umap", label = T)
+p2 <- plot_cells(
+  cds = bm.integrated_filtered.cds,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+p1 + p2
+
+# Add pseudotime information as metadata
+bm.integrated_filtered <- AddMetaData(
+  object = bm.integrated_filtered,
+  metadata = bm.integrated_filtered.cds@principal_graph_aux@listData$UMAP$pseudotime,
+  col.name = "pseudotime"
+)
+FeaturePlot(bm.integrated_filtered, c("pseudotime"), pt.size = 0.1) & scale_color_viridis_c()
+```
+
+
+
+
+
+

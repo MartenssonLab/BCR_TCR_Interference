@@ -1,0 +1,84 @@
+---
+title: "CD8+ T cells without TCR"
+author: "Timothy Sundell"
+date: "2022-10-24"
+output: html_document
+---
+
+# Packages used
+```{r}
+suppressPackageStartupMessages({
+ library(Seurat)
+ library(sctransform)
+ library(tidyverse)
+ library(SeuratWrappers)
+ library(clustree)
+})
+```
+
+# Peripheral blood CD8+ T cells
+```{r}
+# Importing data and create Seurat object
+CD8_T_cells.data <- Read10X(data.dir = "CD8+ T cells of Healthy Donor 1/filtered_feature_bc_matrix/")
+CD8_T_cells <- CreateSeuratObject(counts=CD8_T_cells.data$`Gene Expression`, project = "CD8_T_cells", min.cells = 3, min.features = 200)
+
+# Mitochondrial genes
+CD8_T_cells[["percent.mt"]] <- PercentageFeatureSet(CD8_T_cells, pattern = "^MT-")
+# Ribosomal proteins
+CD8_T_cells[["percent.ribo"]] <- PercentageFeatureSet(CD8_T_cells, pattern = "^RP[SL]")
+
+# Remove cells where at least 5% of total transcripts are from mitochondrial origin
+CD8_T_cells <- subset(CD8_T_cells, percent.mt < 5)
+
+# Removing TCR genes
+CD8_T_cells <- CD8_T_cells[!grepl("^TR[ABDG][VJC]", rownames(CD8_T_cells)), ]
+
+# Normalization, scaling and initial clustering
+CD8_T_cells <- NormalizeData(CD8_T_cells, normalization.method = "LogNormalize", scale.factor = 10000)
+CD8_T_cells <- FindVariableFeatures(CD8_T_cells, selection.method = "vst", nfeatures = 2000)
+CD8_T_cells <- ScaleData(CD8_T_cells, features = rownames(CD8_T_cells))
+CD8_T_cells <- RunPCA(CD8_T_cells, features = VariableFeatures(object = CD8_T_cells))
+ElbowPlot(object = CD8_T_cells)
+CD8_T_cells <- FindNeighbors(CD8_T_cells, dims = 1:10, nn.method = "rann")
+CD8_T_cells <- FindClusters(CD8_T_cells, resolution = c(0.4))
+CD8_T_cells <- RunUMAP(CD8_T_cells, dims= 1:10)
+
+# Single cell transform
+CD8_T_cells <- SCTransform(CD8_T_cells, verbose = FALSE, ncells = NULL)
+CD8_T_cells <- RunPCA(CD8_T_cells, verbose = FALSE)
+ElbowPlot(object = CD8_T_cells)
+CD8_T_cells <- RunUMAP(CD8_T_cells, dims = 1:20, verbose = FALSE)
+CD8_T_cells <- FindNeighbors(CD8_T_cells, dims = 1:20, verbose = FALSE, nn.method = "rann")
+CD8_T_cells <- FindClusters(CD8_T_cells, resolution = c(seq(from = 0.1, to = 2.0, by = 0.1)))
+clustree(x = CD8_T_cells, prefix = "SCT_snn_res.")
+CD8_T_cells <- FindClusters(CD8_T_cells, verbose = FALSE, resolution = c(0.4))
+
+# Add TCR-genes back after clustering
+CD8_T_cells_with_TCR <- CreateSeuratObject(counts=CD8_T_cells.data$`Gene Expression`, project = "CD8_T_cells", min.cells = 3, min.features = 200)
+a <- subset(CD8_T_cells_with_TCR, cells = WhichCells(object = CD8_T_cells))
+CD8_T_cells[["new.counts"]] <- CreateAssayObject(counts = GetAssayData(object = a, slot = "count", assay = "RNA"))
+CD8_T_cells <- NormalizeData(CD8_T_cells, normalization.method = "LogNormalize", scale.factor = 10000, assay = "new.counts")
+CD8_T_cells <- ScaleData(CD8_T_cells, features = rownames(CD8_T_cells), assay = "new.counts")
+
+# Remove cluster 11 and 12 because they are positive for markers not typically found in CD8+ T cells (CD19 and CD14)
+CD8_T_cells_filtered <- subset(CD8_T_cells, ident = 0:10)
+```
+
+## Top-10 upregulated DEGs
+```{r}
+DefaultAssay(CD8_T_cells_filtered) <- "RNA"
+CD8_T_cells_filtered <- NormalizeData(object = CD8_T_cells_filtered, scale.factor = 10000)
+CD8_T_cells_filtered <- ScaleData(object = CD8_T_cells_filtered, features = rownames(CD8_T_cells_filtered))
+
+CD8_T_cells_filtered.markers <- FindAllMarkers(object = CD8_T_cells_filtered, logfc.threshold = 0.25, CD8_T_cells.use = "negbinom", only.pos = T, return.thresh = 0.05)
+
+CD8_T_cells_filtered.markers.filtered <- CD8_T_cells_filtered.markers %>% filter(p_val_adj > 0 & p_val_adj < 0.05)
+
+CD8_T_cells_filtered.markers.filtered_top10 <- CD8_T_cells_filtered.markers.filtered %>%
+  group_by(cluster) %>%
+  slice_min(p_val_adj, n = 10)
+
+DoHeatmap(object = CD8_T_cells_filtered, features = CD8_T_cells_filtered.markers.filtered_top10$gene, raster = F)
+```
+
+
