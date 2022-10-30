@@ -15,6 +15,7 @@ suppressPackageStartupMessage({
   library(dplyr)
   library(stringr)
   library(ggplot2)
+  library(xlsx)
 })
 ```
 
@@ -150,7 +151,7 @@ FeaturePlot(ra1_ig, features = c("NFKBIA", "IGHV3-7", "IGKV4-1", "IGLV2-14", "CD
             pt.size = 1.5, order = T, cols = c("lightgrey", "red"))
 
 ## Plot distribution of IgM from VDJ-seq data
-igm = read.xlsx("ra1_igM_data_VDJ-seq.xlsx", sheetName = "Sheet1")[,1]
+igm = read.xlsx("RA1_IgM_data_VDJ-seq.xlsx", sheetName = "Sheet1")[,1]
 
 DimPlot(ra1_ig, cells.highlight = igm, pt.size = 1.5, sizes.highlight = 1.5, order = T, cols = c("lightgrey", "red")) + NoLegend()
 ```
